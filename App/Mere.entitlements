@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for WKWebView to work in sandbox -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- Load web pages -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Copy/paste in web pages -->
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>com.apple.pboard</string>
+    </array>
+    <!-- File access for downloads / uploads -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- Audio playback -->
+    <key>com.apple.security.device.audio-input</key>
+    <false/>
+</dict>
+</plist>
