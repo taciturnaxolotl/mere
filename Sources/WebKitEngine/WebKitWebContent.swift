@@ -165,6 +165,33 @@ extension WebKitWebContent: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let url = webView.url { eventContinuation.yield(.finished(url: url)) }
+        Task { await emitFavicon() }
+    }
+
+    private func emitFavicon() async {
+        let js = """
+        (function() {
+            var sel = 'link[rel~="icon"], link[rel~="shortcut icon"], link[rel="apple-touch-icon"]';
+            var links = Array.from(document.querySelectorAll(sel));
+            links.sort(function(a, b) {
+                var sa = (a.sizes && a.sizes[0]) ? parseInt(a.sizes[0]) : 0;
+                var sb = (b.sizes && b.sizes[0]) ? parseInt(b.sizes[0]) : 0;
+                return sb - sa;
+            });
+            if (links.length && links[0].href) return links[0].href;
+            return null;
+        })()
+        """
+        let result = try? await webView.evaluateJavaScript(js)
+        let faviconURL: URL?
+        if let href = result as? String, let url = URL(string: href) {
+            faviconURL = url
+        } else if let host = webView.url.flatMap({ URL(string: "\($0.scheme ?? "https")://\($0.host ?? "")") } ) {
+            faviconURL = host.appendingPathComponent("favicon.ico")
+        } else {
+            faviconURL = nil
+        }
+        eventContinuation.yield(.faviconChanged(url: faviconURL))
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
