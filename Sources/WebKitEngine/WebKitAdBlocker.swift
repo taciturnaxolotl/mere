@@ -54,6 +54,13 @@ public final class WebKitAdBlocker: AdBlockEngine {
         await applyToConfiguration()
     }
 
+    /// Apply the current enabled rule lists to a freshly created content controller.
+    /// Called by WebKitBrowserContext when making a new tab.
+    public func applyCurrentRules(to controller: WKUserContentController) {
+        guard isEnabled else { return }
+        for list in compiledLists.values { controller.add(list) }
+    }
+
     // MARK: - Private
 
     private func applyToConfiguration() async {

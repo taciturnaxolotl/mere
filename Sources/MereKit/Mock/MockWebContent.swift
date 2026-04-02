@@ -35,5 +35,7 @@ public final class MockWebContent: WebContent {
     public func attachHostView(_ container: PlatformView) {}
     public func detachHostView() {}
     public func snapshot() async -> PlatformImage? { nil }
+    public func suspend() {}
+    public func resume() {}
     public func close() { continuation.finish() }
 }

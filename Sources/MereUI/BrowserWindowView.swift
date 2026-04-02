@@ -6,9 +6,6 @@ import MereKit
 public struct BrowserWindowView: View {
 
     @StateObject var window: WindowViewModel
-    @State private var sidebarVisible = true
-    // Incrementing this tells whichever address bar is visible to take focus.
-    @State private var addressFocusTrigger = 0
 
     public init(window: WindowViewModel) {
         _window = StateObject(wrappedValue: window)
@@ -41,6 +38,16 @@ public struct BrowserWindowView: View {
         return nil
     }
 
+    private var isLocalhost: Bool {
+        guard let url = window.activeTab?.url else { return false }
+        let host = url.host?.lowercased() ?? ""
+        return host == "localhost" ||
+               host == "127.0.0.1" ||
+               host == "::1" ||
+               host.hasPrefix("127.") ||
+               host == "[::1]"
+    }
+
     public var body: some View {
         ZStack {
             // Full-window color gradient using the raw page background colour.
@@ -56,7 +63,7 @@ public struct BrowserWindowView: View {
             .animation(.easeInOut(duration: 0.35), value: isNewTab)
 
             HStack(spacing: 0) {
-                if sidebarVisible {
+                if window.sidebarVisible {
                     SidebarView(window: window)
                         .frame(width: 220)
                         .background(.ultraThinMaterial)
@@ -67,18 +74,17 @@ public struct BrowserWindowView: View {
                     // Toolbar: transparent background — window gradient shows through.
                     BrowserToolbarView(
                         window: window,
-                        sidebarVisible: $sidebarVisible,
-                        focusTrigger: addressFocusTrigger
+                        sidebarVisible: $window.sidebarVisible,
+                        focusTrigger: window.addressFocusTrigger
                     )
                     .padding(.top, 8)
-                    .padding(.leading, sidebarVisible ? 10 : 86)
+                    .padding(.leading, window.sidebarVisible ? 10 : 86)
                     .padding(.trailing, 10)
                     .padding(.bottom, 8)
 
                     // Content: material matching sidebar, fills all remaining space.
                     contentArea
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.ultraThinMaterial)
                         .clipShape(UnevenRoundedRectangle(
                             topLeadingRadius: 0,
                             bottomLeadingRadius: 10,
@@ -97,46 +103,44 @@ public struct BrowserWindowView: View {
                         .padding(.horizontal, 8)
                         .padding(.bottom, 8)
                 }
+                .padding(4)
+                .overlay(
+                    Group {
+                        if isLocalhost {
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: 0,
+                                bottomLeadingRadius: 14,
+                                bottomTrailingRadius: 14,
+                                topTrailingRadius: 0
+                            )
+                            .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                            .foregroundStyle(.yellow)
+                        }
+                    }
+                )
                 .ignoresSafeArea(edges: .top)
             }
         }
-        .animation(.spring(duration: 0.22), value: sidebarVisible)
-        .background(keyboardShortcuts)
+        .animation(.spring(duration: 0.22), value: window.sidebarVisible)
         .background(TrafficLightNudge(xOffset: 8, yOffset: 8))
         .preferredColorScheme(preferredScheme)
         .onChange(of: window.activeTab?.id) { _, _ in
-            if window.activeTab?.url == nil {
-                addressFocusTrigger += 1
-            } else {
-                NSApp.keyWindow?.makeFirstResponder(nil)
-            }
+            NSApp.keyWindow?.makeFirstResponder(nil)
         }
-    }
-
-    private var keyboardShortcuts: some View {
-        Group {
-            Button("") { sidebarVisible.toggle() }
-                .keyboardShortcut("s", modifiers: .command)
-            Button("") { window.openTab() }
-                .keyboardShortcut("t", modifiers: .command)
-            Button("") {
-                if let tab = window.activeTab { window.closeTab(tab) }
-            }
-            .keyboardShortcut("w", modifiers: .command)
-            Button("") { window.activeTab?.reload() }
-                .keyboardShortcut("r", modifiers: .command)
-            Button("") { addressFocusTrigger += 1 }
-                .keyboardShortcut("l", modifiers: .command)
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
     }
 
     @ViewBuilder
     private var contentArea: some View {
         if let tab = window.activeTab, tab.url != nil || tab.isLoading {
-            WebContentView(content: tab.content)
-                .id(tab.id)
+            ZStack {
+                WebContentView(content: tab.content)
+                    .id(tab.id)
+
+                if let error = tab.navigationError {
+                    NavigationErrorView(error: error)
+                        .padding()
+                }
+            }
         } else {
             NewTabView(hasBackground: window.newTabBackgroundColor != nil)
         }
@@ -154,6 +158,46 @@ struct NewTabView: View {
             .foregroundStyle(.primary)
             .tracking(10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Navigation Error
+
+struct NavigationErrorView: View {
+    let error: Error
+
+    private var errorMessage: String {
+        let nsError = error as NSError
+        switch (nsError.domain, nsError.code) {
+        case ("NSURLErrorDomain", -1004):
+            return "Can't connect to server"
+        case ("NSURLErrorDomain", -1001):
+            return "Connection timed out"
+        case ("NSURLErrorDomain", -1003):
+            return "Server not found"
+        default:
+            return nsError.localizedDescription
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.orange)
+
+            Text("Unable to load page")
+                .font(.system(size: 20, weight: .semibold))
+
+            Text(errorMessage)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: 300)
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(radius: 20)
     }
 }
 
@@ -210,14 +254,25 @@ struct SidebarTabRow: View {
 
             Spacer(minLength: 0)
 
+            if tab.hasAudioPlaying {
+                Button {
+                    tab.content.isMuted.toggle()
+                } label: {
+                    Image(systemName: tab.content.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 9, weight: .medium))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(HoverButtonStyle())
+                .transition(.opacity.animation(.easeInOut(duration: 0.15)))
+            }
+
             // Always reserve space; only visible on hover or when active.
             Button { onClose() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .semibold))
                     .frame(width: 14, height: 14)
-                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle())
             .opacity(isHovered || isActive ? 1 : 0)
         }
         .padding(.horizontal, 10)
@@ -232,15 +287,18 @@ struct SidebarTabRow: View {
 
 private final class FaviconCache {
     static let shared = FaviconCache()
-    private var store: [URL: NSImage] = [:]
-    private let queue = DispatchQueue(label: "sh.dunkirk.mere.favicon-cache")
+    private let cache: NSCache<NSURL, NSImage> = {
+        let c = NSCache<NSURL, NSImage>()
+        c.countLimit = 200
+        return c
+    }()
 
     func image(for url: URL) -> NSImage? {
-        queue.sync { store[url] }
+        cache.object(forKey: url as NSURL)
     }
 
     func store(_ image: NSImage, for url: URL) {
-        queue.async { self.store[url] = image }
+        cache.setObject(image, forKey: url as NSURL)
     }
 }
 
@@ -302,7 +360,12 @@ struct BrowserToolbarView: View {
     @Binding var sidebarVisible: Bool
     let focusTrigger: Int
     @State private var addressText = ""
-    @State private var addressBarHovered = false
+
+    private var securityState: SecurityState {
+        guard let url = window.activeTab?.url else { return .none }
+        if isLocalhost(url) { return .localhost }
+        return url.scheme == "https" ? .secure : .insecure
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -317,39 +380,38 @@ struct BrowserToolbarView: View {
                 window.activeTab?.goForward()
             }
 
-            AddressBar(text: $addressText, focusTrigger: focusTrigger, onSubmit: navigate)
-                .frame(maxWidth: .infinity, minHeight: 22)
-                .padding(.leading, 10)
-                .padding(.trailing, 4)
-                .padding(.vertical, 5)
-                .onChange(of: window.activeTab?.url) { _, url in
-                    addressText = url?.absoluteString ?? ""
-                }
-                .overlay(alignment: .trailing) {
-                    if let url = window.activeTab?.url, addressBarHovered {
+            HStack(spacing: 6) {
+                securityIcon
+
+                HStack(spacing: 6) {
+                    AddressBar(text: $addressText, focusTrigger: focusTrigger, onSubmit: navigate)
+                        .frame(maxWidth: .infinity, minHeight: 22)
+
+                    if let url = window.activeTab?.url {
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(url.absoluteString, forType: .string)
                         } label: {
                             Image(systemName: "link")
-                                .font(.system(size: 11, weight: .medium))
-                                .frame(width: 28, height: 28)
+                                .font(.system(size: 10, weight: .medium))
                         }
                         .buttonStyle(HoverButtonStyle())
-                        .help("Copy URL")
-                        .transition(.opacity.animation(.easeInOut(duration: 0.12)))
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .onChange(of: window.activeTab?.url) { _, url in
+                    addressText = url?.absoluteString ?? ""
+                }
                 .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Color(nsColor: .controlBackgroundColor)
-                        .opacity(addressBarHovered ? 0.68 : 0.55))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7)
-                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.5)
-                    )
-            )
-            .animation(.easeInOut(duration: 0.15), value: addressBarHovered)
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(.regularMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7)
+                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
+                        )
+                )
+            }
 
             navIcon("arrow.clockwise") { window.activeTab?.reload() }
 
@@ -375,16 +437,95 @@ struct BrowserToolbarView: View {
         .disabled(disabled)
     }
 
+    @ViewBuilder
+    private var securityIcon: some View {
+        Button {
+            showSecurityInfo()
+        } label: {
+            let iconName: String = {
+                switch securityState {
+                case .secure, .localhost:
+                    return "lock.fill"
+                case .insecure:
+                    return "lock.open.fill"
+                case .none:
+                    return "lock.fill"
+                }
+            }()
+
+            Image(systemName: iconName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 20, height: 26)
+        }
+        .buttonStyle(HoverButtonStyle())
+    }
+
+    private func showSecurityInfo() {
+        guard let url = window.activeTab?.url else { return }
+        let message: String
+        switch securityState {
+        case .secure:
+            message = "Connection is secure (HTTPS)\n\n\(url.absoluteString)"
+        case .insecure:
+            message = "Connection is not secure (HTTP)\n\n\(url.absoluteString)"
+        case .localhost:
+            message = "Localhost connection\n\n\(url.absoluteString)"
+        case .none:
+            message = "No connection"
+        }
+        let alert = NSAlert()
+        alert.messageText = "Security Information"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func navigate() {
         let raw = addressText.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty else { return }
+
         let url: URL
-        if raw.contains(".") && !raw.contains(" "),
-           let u = URL(string: raw.hasPrefix("http") ? raw : "https://\(raw)") {
-            url = u
+
+        func isURL(_ input: String) -> Bool {
+            // Already has a scheme
+            if input.hasPrefix("http://") || input.hasPrefix("https://") {
+                return true
+            }
+
+            // localhost (with optional port)
+            if input.lowercased().hasPrefix("localhost") {
+                return true
+            }
+
+            // IPv4 address pattern
+            let ipv4Pattern = #"^(\d{1,3}\.){3}\d{1,3}(:\d+)?$"#
+            if let regex = try? NSRegularExpression(pattern: ipv4Pattern),
+               regex.firstMatch(in: input, options: [], range: NSRange(input.startIndex..., in: input)) != nil {
+                return true
+            }
+
+            // Domain-like (contains dot, no spaces)
+            if input.contains(".") && !input.contains(" ") {
+                return true
+            }
+
+            return false
+        }
+
+        if isURL(raw) {
+            let urlString = raw.hasPrefix("http") ? raw : "http://\(raw)"
+            if let u = URL(string: urlString) {
+                url = u
+            } else {
+                // Fallback to search if URL construction fails
+                url = URL(string: "https://s.dunkirk.sh?q=\(raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")!
+            }
         } else {
             url = URL(string: "https://s.dunkirk.sh?q=\(raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")!
         }
+
         if let tab = window.activeTab {
             tab.loadURL(url)
         } else {
@@ -411,7 +552,7 @@ struct AddressBar: NSViewRepresentable {
         f.font = .systemFont(ofSize: 13)
         f.cell?.isScrollable = true
         f.cell?.wraps = false
-        f.alignment = .center
+        f.alignment = .left
         f.delegate = context.coordinator
         return f
     }
@@ -430,7 +571,7 @@ struct AddressBar: NSViewRepresentable {
             context.coordinator.lastTrigger = focusTrigger
             context.coordinator.focusGeneration += 1
             let gen = context.coordinator.focusGeneration
-            DispatchQueue.main.async { [weak coordinator = context.coordinator] in
+            Task { @MainActor [weak coordinator = context.coordinator] in
                 guard coordinator?.focusGeneration == gen else { return }
                 nsView.window?.makeFirstResponder(nsView)
                 nsView.currentEditor()?.selectAll(nil)
@@ -440,25 +581,26 @@ struct AddressBar: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    /// Returns an attributed string showing `host` in medium tone and `/path` in muted tone.
+    /// Returns an attributed string showing `host` in label color and `/path` in secondary label color.
     func prettyAttributed(_ urlString: String) -> NSAttributedString? {
         guard !urlString.isEmpty,
               let url = URL(string: urlString),
               let host = url.host else { return nil }
         let font = NSFont.systemFont(ofSize: 13)
         let para = NSMutableParagraphStyle()
-        para.alignment = .center
+        para.alignment = .left
         let hostAttr: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.65),
+            .foregroundColor: NSColor.labelColor,
             .paragraphStyle: para,
         ]
         let pathAttr: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.32),
+            .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: para,
         ]
-        let result = NSMutableAttributedString(string: host, attributes: hostAttr)
+        let displayHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let result = NSMutableAttributedString(string: displayHost, attributes: hostAttr)
         let path = url.path
         let query = url.query.map { "?\($0)" } ?? ""
         let suffix = (path == "/" || path.isEmpty ? "" : path) + query
@@ -490,7 +632,7 @@ struct AddressBar: NSViewRepresentable {
             if selector == #selector(NSResponder.insertNewline(_:)) {
                 focusGeneration += 1  // cancel any pending focus-and-select
                 parent.onSubmit()
-                DispatchQueue.main.async { control.window?.makeFirstResponder(nil) }
+                Task { @MainActor in control.window?.makeFirstResponder(nil) }
                 return true
             }
             return false
@@ -517,6 +659,24 @@ struct AddressBar: NSViewRepresentable {
     }
 }
 
+// MARK: - Security
+
+enum SecurityState {
+    case none
+    case secure
+    case insecure
+    case localhost
+}
+
+private func isLocalhost(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    return host == "localhost" ||
+           host == "127.0.0.1" ||
+           host == "::1" ||
+           host.hasPrefix("127.") ||
+           host == "[::1]"
+}
+
 // MARK: - Traffic light repositioning
 
 /// Zero-size view that moves the window's traffic-light buttons down by `yOffset` points
@@ -530,7 +690,7 @@ private struct TrafficLightNudge: NSViewRepresentable {
     func updateNSView(_ nsView: _View, context: Context) {
         let x = xOffset, y = yOffset
         // Defer until after AppKit's own layout pass resets button frames.
-        DispatchQueue.main.async { nsView.apply(xOffset: x, yOffset: y) }
+        Task { @MainActor in nsView.apply(xOffset: x, yOffset: y) }
     }
 
     final class _View: NSView {

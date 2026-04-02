@@ -11,11 +11,18 @@ public final class WindowViewModel: ObservableObject {
     @Published public var activeTab: Tab?
     @Published public private(set) var newTabBackgroundColor: PlatformColor?
 
+    /// Sidebar visibility — owned here so keyboard shortcuts in commands can toggle it.
+    @Published public var sidebarVisible = true
+    /// Incrementing this triggers the address bar to take focus and select-all.
+    @Published public var addressFocusTrigger = 0
+
     private let webkitContext: any BrowserContext
     private let chromiumContext: (any BrowserContext)?
     private let cookieSync: CookieSyncController
     public let adBlock: AdBlockController
     private var activeTabObservation: AnyCancellable?
+
+    private let tabsFileURL: URL
 
     public init(
         webkitContext: any BrowserContext,
@@ -29,6 +36,11 @@ public final class WindowViewModel: ObservableObject {
             chromium: chromiumContext
         )
         self.adBlock = AdBlockController(engines: adBlockEngines)
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appDir = appSupport.appendingPathComponent("Mere", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        self.tabsFileURL = appDir.appendingPathComponent("saved_tabs.json")
     }
 
     // MARK: - Tab management
@@ -39,28 +51,38 @@ public final class WindowViewModel: ObservableObject {
         if url == nil, let current = activeTab, current.url != nil {
             newTabBackgroundColor = current.themeColor
         }
+        activeTab?.deactivate()
         let resolvedEngine = engine ?? url.map(EngineType.preferred) ?? .webkit
         let context = context(for: resolvedEngine)
         let content = context.makeWebContent()
         let tab = Tab(content: content)
         tabs.append(tab)
         activeTab = tab
+        tab.activate()
         subscribeToActiveTab()
         if let url { tab.loadURL(url) }
         return tab
     }
 
     public func closeTab(_ tab: Tab) {
+        guard tabs.count > 1 else {
+            tab.resetToNewTab()
+            return
+        }
+        tab.deactivate()
         tab.content.close()
         tabs.removeAll { $0.id == tab.id }
         if activeTab?.id == tab.id {
             activeTab = tabs.last
+            activeTab?.activate()
             subscribeToActiveTab()
         }
     }
 
     public func activateTab(_ tab: Tab) {
+        activeTab?.deactivate()
         activeTab = tab
+        tab.activate()
         subscribeToActiveTab()
     }
 
@@ -80,6 +102,7 @@ public final class WindowViewModel: ObservableObject {
             tabs.move(fromOffsets: IndexSet(integer: tabs.count - 1), toOffset: idx)
         }
         activeTab = newTab
+        newTab.activate()
         subscribeToActiveTab()
     }
 

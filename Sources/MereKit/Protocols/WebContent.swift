@@ -12,6 +12,19 @@ public typealias PlatformColor = UIColor
 #endif
 
 extension PlatformColor {
+    /// Serialize to an `rgb()` CSS string.
+    public var cssString: String? {
+        #if canImport(AppKit)
+        guard let c = usingColorSpace(.deviceRGB) else { return nil }
+        let r = Int(c.redComponent * 255), g = Int(c.greenComponent * 255), b = Int(c.blueComponent * 255)
+        #else
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        let r = Int(r * 255), g = Int(g * 255), b = Int(b * 255)
+        #endif
+        return "rgb(\(r),\(g),\(b))"
+    }
+
     /// Create from a CSS color string — hex (`#rgb`, `#rrggbb`) or `rgb()`/`rgba()`.
     public static func fromCSS(_ value: String) -> PlatformColor? {
         let s = value.trimmingCharacters(in: .whitespaces)
@@ -115,6 +128,13 @@ public protocol WebContent: AnyObject {
     var navigationEvents: AsyncStream<NavigationEvent> { get }
 
     // MARK: - Lifecycle
+
+    /// Signal that the tab moved to the background. Implementations should
+    /// fire the Page Visibility API and pause media so the page reduces activity.
+    func suspend()
+
+    /// Signal that the tab became active again.
+    func resume()
 
     func close()
 }

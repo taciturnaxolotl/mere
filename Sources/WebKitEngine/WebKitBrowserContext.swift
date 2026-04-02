@@ -25,7 +25,14 @@ public final class WebKitBrowserContext: BrowserContext {
     // MARK: - BrowserContext
 
     public func makeWebContent() -> any WebContent {
-        WebKitWebContent(configuration: sharedConfiguration)
+        // Each tab needs its own WKWebViewConfiguration so that script message
+        // handler names (mereAudio, mereTheme) don't collide. We share only the
+        // websiteDataStore so cookies and storage are common across tabs.
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = dataStore
+        config.preferences.isElementFullscreenEnabled = true
+        adBlocker.applyCurrentRules(to: config.userContentController)
+        return WebKitWebContent(configuration: config)
     }
 
     public func cookies(for url: URL) async -> [HTTPCookie] {

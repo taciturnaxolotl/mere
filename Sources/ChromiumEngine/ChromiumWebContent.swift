@@ -89,5 +89,7 @@ public final class ChromiumWebContent: WebContent {
 
     public func snapshot() async -> NSImage? { nil }
 
+    public func suspend() {}
+    public func resume() {}
     public func close() { continuation.finish() }
 }

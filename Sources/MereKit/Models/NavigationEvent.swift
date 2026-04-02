@@ -8,6 +8,8 @@ public enum NavigationEvent: Sendable {
     case failed(url: URL?, error: Error)
     case titleChanged(title: String)
     case faviconChanged(url: URL?)
+    /// Native theme-color from `<meta name="theme-color">` — carries the raw CSS string.
+    case themeColorChanged(cssColor: String)
 }
 
 public struct NavigationPolicy: Sendable {

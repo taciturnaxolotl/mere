@@ -43,15 +43,102 @@ public final class WebKitWebContent: NSObject, WebContent {
 
     // MARK: - Init
 
-    public init(configuration: WKWebViewConfiguration = .init()) {
+    public override convenience init() {
+        self.init(configuration: WKWebViewConfiguration())
+    }
+
+    public init(configuration: WKWebViewConfiguration) {
         let (stream, continuation) = AsyncStream<NavigationEvent>.makeStream()
         self.navigationEvents = stream
         self.eventContinuation = continuation
+
+        // Audio: forwards play/pause state via message handler.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: """
+            (function() {
+                function notify() {
+                    var playing = Array.from(document.querySelectorAll('video,audio'))
+                        .some(function(m){ return !m.paused && !m.muted && m.volume > 0; });
+                    window.webkit.messageHandlers.mereAudio.postMessage(playing);
+                }
+                document.addEventListener('play', notify, true);
+                document.addEventListener('pause', notify, true);
+                document.addEventListener('volumechange', notify, true);
+            })();
+            """,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+
+        // Theme colour detection. Priority order:
+        //   1. meta[name="theme-color"] — explicit, always wins
+        //   2. elementFromPoint walk — finds the actual rendered background
+        //      regardless of which element holds it (wrapper divs, app roots, etc.)
+        // Triggers: documentEnd, window load, html/body attr mutations,
+        // and <head> childList (for SPAs that inject meta[name="theme-color"]).
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: """
+            (function() {
+                var _lastColor = null;
+                function elBg(el) {
+                    var bg = window.getComputedStyle(el).backgroundColor;
+                    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+                    // Also check legacy bgcolor attribute (used by HN and old-school HTML)
+                    var attr = el.getAttribute ? el.getAttribute('bgcolor') : null;
+                    if (attr) return attr;
+                    return null;
+                }
+                function readColor() {
+                    var m = document.querySelector('meta[name="theme-color"]');
+                    if (m && m.content) return m.content;
+                    // Walk up from the center of the page to find the background.
+                    var el = document.elementFromPoint(
+                        window.innerWidth / 2, window.innerHeight / 2);
+                    while (el && el.nodeType === 1) {
+                        var bg = elBg(el);
+                        if (bg) return bg;
+                        el = el.parentElement;
+                    }
+                    return null;
+                }
+                function report() {
+                    var c = readColor();
+                    if (c && c !== _lastColor) {
+                        _lastColor = c;
+                        window.webkit.messageHandlers.mereTheme.postMessage(c);
+                    }
+                }
+                report();
+                window.addEventListener('load', report);
+                var attrObs = new MutationObserver(report);
+                var attrOpts = { attributes: true, attributeFilter: ['style', 'class'] };
+                attrObs.observe(document.documentElement, attrOpts);
+                if (document.body) attrObs.observe(document.body, attrOpts);
+                if (document.head) {
+                    var headObs = new MutationObserver(function(ms) {
+                        for (var i = 0; i < ms.length; i++) {
+                            for (var j = 0; j < ms[i].addedNodes.length; j++) {
+                                if (ms[i].addedNodes[j].nodeName === 'META') { report(); return; }
+                            }
+                        }
+                    });
+                    headObs.observe(document.head, { childList: true });
+                }
+            })();
+            """,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
 
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         self.webView.allowsBackForwardNavigationGestures = true
 
         super.init()
+
+        // Use a weak wrapper to avoid retain cycles through userContentController.
+        let weak = WeakScriptMessageHandler(self)
+        configuration.userContentController.add(weak, name: "mereAudio")
+        configuration.userContentController.add(weak, name: "mereTheme")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -112,6 +199,31 @@ public final class WebKitWebContent: NSObject, WebContent {
     public func snapshot() async -> NSImage? {
         let config = WKSnapshotConfiguration()
         return try? await webView.takeSnapshot(configuration: config)
+    }
+
+    public func suspend() {
+        // Tell the page it is hidden — well-behaved pages pause rAF, timers, etc.
+        Task {
+            _ = try? await webView.evaluateJavaScript("""
+            (function() {
+                Object.defineProperty(document,'hidden',{value:true,configurable:true});
+                Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true});
+                document.dispatchEvent(new Event('visibilitychange'));
+            })()
+            """)
+        }
+    }
+
+    public func resume() {
+        Task {
+            _ = try? await webView.evaluateJavaScript("""
+            (function() {
+                Object.defineProperty(document,'hidden',{value:false,configurable:true});
+                Object.defineProperty(document,'visibilityState',{value:'visible',configurable:true});
+                document.dispatchEvent(new Event('visibilitychange'));
+            })()
+            """)
+        }
     }
 
     public func close() {
@@ -215,5 +327,35 @@ extension WebKitWebContent: WKUIDelegate {
             eventContinuation.yield(.started(url: url))
         }
         return nil
+    }
+}
+
+// MARK: - Audio state message handler
+
+extension WebKitWebContent: WKScriptMessageHandler {
+    public func userContentController(_ userContentController: WKUserContentController,
+                                      didReceive message: WKScriptMessage) {
+        switch message.name {
+        case "mereAudio":
+            if let playing = message.body as? Bool {
+                Task { @MainActor in self.hasAudioPlaying = playing }
+            }
+        case "mereTheme":
+            if let css = message.body as? String {
+                eventContinuation.yield(.themeColorChanged(cssColor: css))
+            }
+        default: break
+        }
+    }
+}
+
+/// Breaks the WKUserContentController → handler retain cycle.
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                                didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
     }
 }
