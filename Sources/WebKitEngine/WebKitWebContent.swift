@@ -40,6 +40,8 @@ public final class WebKitWebContent: NSObject, WebContent {
 
     let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
+    private var pendingReloadURL: URL?
+    private var reloadAttempt = 0
 
     // MARK: - Init
 
@@ -67,6 +69,37 @@ public final class WebKitWebContent: NSObject, WebContent {
             })();
             """,
             injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+
+        // Console logging for debugging
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: """
+            (function() {
+                const originalLog = console.log;
+                const originalError = console.error;
+                const originalWarn = console.warn;
+
+                console.log = function() {
+                    originalLog.apply(console, arguments);
+                    const args = Array.from(arguments).map(String);
+                    window.webkit.messageHandlers.mereConsole.postMessage('LOG: ' + args.join(' '));
+                };
+
+                console.error = function() {
+                    originalError.apply(console, arguments);
+                    const args = Array.from(arguments).map(String);
+                    window.webkit.messageHandlers.mereConsole.postMessage('ERROR: ' + args.join(' '));
+                };
+
+                console.warn = function() {
+                    originalWarn.apply(console, arguments);
+                    const args = Array.from(arguments).map(String);
+                    window.webkit.messageHandlers.mereConsole.postMessage('WARN: ' + args.join(' '));
+                };
+            })();
+            """,
+            injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
 
@@ -125,6 +158,8 @@ public final class WebKitWebContent: NSObject, WebContent {
                     headObs.observe(document.head, { childList: true });
                 }
             })();
+            console.log('📄 Page loaded, document.styleSheets.length:', document.styleSheets.length);
+            console.log('📄 StyleSheets:', Array.from(document.styleSheets).map(s => s.href));
             """,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
@@ -133,12 +168,18 @@ public final class WebKitWebContent: NSObject, WebContent {
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         self.webView.allowsBackForwardNavigationGestures = true
 
+        #if DEBUG
+        // Enable Web Inspector for Safari
+        self.webView.isInspectable = true
+        #endif
+
         super.init()
 
         // Use a weak wrapper to avoid retain cycles through userContentController.
         let weak = WeakScriptMessageHandler(self)
         configuration.userContentController.add(weak, name: "mereAudio")
         configuration.userContentController.add(weak, name: "mereTheme")
+        configuration.userContentController.add(weak, name: "mereConsole")
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -148,6 +189,7 @@ public final class WebKitWebContent: NSObject, WebContent {
     // MARK: - WebContent
 
     public func loadURL(_ url: URL) {
+        print("🌐 WebKitWebContent.loadURL: \(url.absoluteString)")
         webView.load(URLRequest(url: url))
     }
 
@@ -273,6 +315,8 @@ extension WebKitWebContent: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if let url = webView.url { eventContinuation.yield(.committed(url: url)) }
+        reloadAttempt = 0
+        pendingReloadURL = nil
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -304,6 +348,27 @@ extension WebKitWebContent: WKNavigationDelegate {
             faviconURL = nil
         }
         eventContinuation.yield(.faviconChanged(url: faviconURL))
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        let retryableCodes = [-1001, -1002, -1004, -1005]
+
+        print("❌ Provisional load failed: domain=\(nsError.domain) code=\(nsError.code) url=\(webView.url?.absoluteString ?? "nil")")
+
+        // Retry once for transient network errors
+        if retryableCodes.contains(nsError.code), reloadAttempt == 0, let url = webView.url {
+            reloadAttempt = 1
+            pendingReloadURL = url
+            print("🔄 Attempting retry for url: \(url.absoluteString)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.webView.reload()
+            }
+        } else {
+            reloadAttempt = 0
+            pendingReloadURL = nil
+            eventContinuation.yield(.failed(url: webView.url, error: error))
+        }
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -343,6 +408,10 @@ extension WebKitWebContent: WKScriptMessageHandler {
         case "mereTheme":
             if let css = message.body as? String {
                 eventContinuation.yield(.themeColorChanged(cssColor: css))
+            }
+        case "mereConsole":
+            if let log = message.body as? String {
+                print("🖥️ JS Console: \(log)")
             }
         default: break
         }

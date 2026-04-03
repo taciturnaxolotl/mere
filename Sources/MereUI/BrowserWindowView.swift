@@ -131,18 +131,16 @@ public struct BrowserWindowView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-        if let tab = window.activeTab, tab.url != nil || tab.isLoading {
-            ZStack {
+        if let tab = window.activeTab {
+            if let error = tab.navigationError {
+                NavigationErrorView(error: error)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab.url != nil || tab.isLoading {
                 WebContentView(content: tab.content)
                     .id(tab.id)
-
-                if let error = tab.navigationError {
-                    NavigationErrorView(error: error)
-                        .padding()
-                }
+            } else {
+                NewTabView(hasBackground: window.newTabBackgroundColor != nil)
             }
-        } else {
-            NewTabView(hasBackground: window.newTabBackgroundColor != nil)
         }
     }
 }
@@ -401,7 +399,10 @@ struct BrowserToolbarView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 3)
                 .onChange(of: window.activeTab?.url) { _, url in
-                    addressText = url?.absoluteString ?? ""
+                    // Show normalized URL in address bar (0.0.0.0 -> 127.0.0.1)
+                    var urlString = url?.absoluteString ?? ""
+                    urlString = urlString.replacingOccurrences(of: "0.0.0.0", with: "127.0.0.1", options: .caseInsensitive)
+                    addressText = urlString
                 }
                 .background(
                     RoundedRectangle(cornerRadius: 7)
@@ -514,8 +515,14 @@ struct BrowserToolbarView: View {
             return false
         }
 
+        func normalizeURL(_ input: String) -> String {
+            // Replace 0.0.0.0 with 127.0.0.1 (0.0.0.0 is blocked by WebKit)
+            return input.replacingOccurrences(of: "0.0.0.0", with: "127.0.0.1", options: .caseInsensitive)
+        }
+
         if isURL(raw) {
-            let urlString = raw.hasPrefix("http") ? raw : "http://\(raw)"
+            let normalized = normalizeURL(raw)
+            let urlString = normalized.hasPrefix("http") ? normalized : "http://\(normalized)"
             if let u = URL(string: urlString) {
                 url = u
             } else {

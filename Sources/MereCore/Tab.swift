@@ -42,7 +42,10 @@ public final class Tab: ObservableObject, Identifiable {
 
     // MARK: - Navigation passthrough
 
-    public func loadURL(_ url: URL) { content.loadURL(url) }
+    public func loadURL(_ url: URL) {
+        print("🔍 Tab.loadURL: \(url.absoluteString)")
+        content.loadURL(url)
+    }
     public func goBack() { content.goBack() }
     public func goForward() { content.goForward() }
     public func reload() { content.reload() }
